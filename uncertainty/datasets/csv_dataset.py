@@ -21,6 +21,7 @@ class CSVDataset(IterableDataset):
         gt_csv_dir_name: str,
         run: str,
         filter_fn: Optional[Callable[[Path], bool]] = None,
+        length: int | None = None,
     ):
         self.tracker_dir = Path(tracker_csv_dir_name)
         self.embedding_dir = Path(embedding_csv_dir_name)
@@ -56,6 +57,8 @@ class CSVDataset(IterableDataset):
                 f for f in self.candidate_graph_pkl_files if filter_fn(f)
             ]
 
+        self.length = length
+
         logger.info(f"Found {len(self.tracker_csv_files)} tracker files.")
         logger.info(f"Found {len(self.embedding_csv_files)} embedding files.")
         logger.info(f"Found {len(self.gt_csv_files)} ground truth files.")
@@ -68,23 +71,22 @@ class CSVDataset(IterableDataset):
         )
 
     def __iter__(self):
-        while True:
-            yield self.create_sample()
+        if self.length is None:
+            while True:
+                yield self.create_sample()
+        elif self.length is not None:
+            for index in range(self.length):
+                yield self.create_sample()
 
     def create_sample(self):
         index = np.random.randint(len(self.tracker_csv_files))
-
         edges = np.loadtxt(self.tracker_csv_files[index], delimiter=" ")
-
         index_edge = np.random.randint(len(edges))
         id_, t, id_tp1, tp1 = map(int, edges[index_edge])
-
         embedding = np.loadtxt(self.embedding_csv_files[index], delimiter=" ")
-
         mapping_id_embedding = {
             f"{int(row[1])}_{int(row[0])}": row[2:] for row in embedding
         }
-
         try:
             x_positive = np.concatenate(
                 [
@@ -94,7 +96,7 @@ class CSVDataset(IterableDataset):
             )
         except KeyError:
             # Skip samples with missing embeddings
-            logger.warning(f"Could not find correspond embedding!")
+            logger.warning("Could not find correspond embedding!")
             return self.create_sample()
 
         y_ILP_positive = np.array([1.0], dtype=np.float32)
@@ -147,17 +149,21 @@ class CSVDataset(IterableDataset):
                     y_ILP_negative = y_ILP_positive
                     y_GT_negative = y_GT_positive
 
-        pair_positive = np.concatenate([x_positive, np.atleast_1d(y_ILP_positive), np.atleast_1d(y_GT_positive)])
-        pair_negative = np.concatenate([x_negative, np.atleast_1d(y_ILP_negative), np.atleast_1d(y_GT_negative)])
+        pair_positive = np.concatenate(
+            [x_positive, np.atleast_1d(y_ILP_positive), np.atleast_1d(y_GT_positive)]
+        )
+        pair_negative = np.concatenate(
+            [x_negative, np.atleast_1d(y_ILP_negative), np.atleast_1d(y_GT_negative)]
+        )
         stacked = np.stack([pair_positive, pair_negative], axis=0)
-        
-        #logger.info(f"csv file is {self.tracker_csv_files[index]}.")
-        #logger.info(f"embedding file is {self.embedding_csv_files[index]}.")
-        #logger.info(f"candidate graph file is {self.candidate_graph_pkl_files[index]}.")
-        #logger.info(f"ground truth file is {self.gt_csv_files[index]}.")
-        #logger.info(f"positive edge is {edges[index_edge]}.")
-        #logger.info(f"positive pair: {pair_positive}.")
-        #logger.info(f"negative edge is {out_edge}.")
-        #logger.info(f"negative pair: {pair_negative}.")
+
+        # logger.info(f"csv file is {self.tracker_csv_files[index]}.")
+        # logger.info(f"embedding file is {self.embedding_csv_files[index]}.")
+        # logger.info(f"candidate graph file is {self.candidate_graph_pkl_files[index]}.")
+        # logger.info(f"ground truth file is {self.gt_csv_files[index]}.")
+        # logger.info(f"positive edge is {edges[index_edge]}.")
+        # logger.info(f"positive pair: {pair_positive}.")
+        # logger.info(f"negative edge is {out_edge}.")
+        # logger.info(f"negative pair: {pair_negative}.")
 
         return torch.from_numpy(stacked).float()
