@@ -7,7 +7,7 @@ setup(
     author='Manan Lalit',
     author_email='manan.lalit@gmail.com',
     description='Using TARFlow to model uncertainty of edges.',
-    long_description=open('README').read(),
+    long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/yourusername/my_package',  # optional
     classifiers=[

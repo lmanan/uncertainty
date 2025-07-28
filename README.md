@@ -8,7 +8,8 @@ cd uncertainty
 ```
 
 Next, create environment, activate it and install in editable mode:
-```
+
+```bash
 conda create -n uncertainty python==3.10
 conda activate uncertainty
 pip install -e .
