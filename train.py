@@ -70,16 +70,28 @@ def main(args):
 
     # Model config
     model_cfg = args["model"]
-    model = Model(
-        in_channels=model_cfg["in_channels"],
-        img_size=model_cfg["img_size"],
-        patch_size=model_cfg["patch_size"],
-        channels=model_cfg["channels"],
+    #model = Model(
+    #    in_channels=model_cfg["in_channels"],
+    #    img_size=model_cfg["img_size"],
+    #    patch_size=model_cfg["patch_size"],
+    #    channels=model_cfg["channels"],
+    #    num_blocks=model_cfg["num_blocks"],
+    #    layers_per_block=model_cfg["layers_per_block"],
+    #    nvp=model_cfg["nvp"],
+    #    num_classes=model_cfg["num_classes"],
+    #).to(device)
+
+
+    model= Model(
+        num_tokens=model_cfg["num_tokens"],
+        token_size=model_cfg["token_size"],
+        projection_dims=model_cfg["projection_dims"],
         num_blocks=model_cfg["num_blocks"],
         layers_per_block=model_cfg["layers_per_block"],
         nvp=model_cfg["nvp"],
         num_classes=model_cfg["num_classes"],
     ).to(device)
+
 
     # Noise config
     noise_cfg = args["noise"]
@@ -128,8 +140,8 @@ def main(args):
     for iteration, x in enumerate(loader):
         if iteration >= num_iterations:
             break
-        x = x[..., :-1]  # ignore the GT dimension for now!
-        x = x.view(x.shape[0] * x.shape[1], 1, -1)
+        x = x[..., :-1]  # ignore the GT dimension for now! B 2 129
+        x = x.view(x.shape[0] * x.shape[1], x.shape[-1], 1) # B 129 1
         x = x.to(device)
         if use_noise:
             eps = std + torch.randn_like(x)
