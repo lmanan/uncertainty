@@ -91,7 +91,7 @@ class CSVDataset(IterableDataset):
             while True:
                 yield self.create_sample()
         else:
-            for _ in range(self.length):
+            for index in range(self.length):
                 yield self.create_sample()
 
     def create_sample(self):
