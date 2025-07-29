@@ -1,1 +1,1 @@
-from .transformer_flow import Model
+from .transformer_flow_nonimage import Model
