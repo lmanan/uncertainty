@@ -16,7 +16,8 @@ setup(
     python_requires='>=3.6',
     install_requires=[
         "torch",
-        "torchmetrics"
+        "torchmetrics",
+        "pyyaml"
         #"motile_toolbox @ git+https://github.com/lmanan/motile_toolbox.git",
     ],
 )
