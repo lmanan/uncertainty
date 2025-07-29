@@ -1,122 +1,101 @@
-from uncertainty.datasets import CSVDataset
-from uncertainty.models import Model
-from torch.utils.data import DataLoader
-from pathlib import Path
-import torch
+# train_tarflow.py
+
+import argparse
 import logging
 import yaml
-import argparse
-import uncertainty.utils as utils
 from datetime import datetime
+from pathlib import Path
 
+import torch
+from torch.utils.data import DataLoader
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-today_str = datetime.today().strftime("%Y-%m-%d")
+from uncertainty.datasets import CSVDataset
+from uncertainty.models import Model
+import uncertainty.utils as utils
 
 torch.backends.cudnn.benchmark = True
 
 
-def compute_loss(x: torch.Tensor, y: torch.Tensor | None, model: Model):
+def setup_logger():
+    logging.basicConfig(level=logging.INFO)
+    return logging.getLogger("TARFlow")
+
+
+def create_dataset(cfg, ignore_keys):
+    def exclude_if_contains(path: Path) -> bool:
+        return not any(key in str(path) for key in ignore_keys)
+
+    return CSVDataset(
+        tracker_csv_dir_name=cfg["tracker_csv_dir_name"],
+        embedding_csv_dir_name=cfg["embedding_csv_dir_name"],
+        gt_csv_dir_name=cfg["gt_csv_dir_name"],
+        run=cfg["run"],
+        filter_fn=exclude_if_contains,
+        candidate_graph_dir_name=cfg["candidate_graph_dir_name"],
+        length=cfg.get("length", None),
+    )
+
+
+def maybe_add_noise(x, std, use_noise):
+    return x + std * torch.randn_like(x) if use_noise else x
+
+
+def compute_loss(x, y, model):
     z, outputs, logdets = model(x, y)
     loss = model.get_loss(z, logdets)
     return loss, (z, outputs, logdets)
 
 
 def main(args):
-    # Exclude test sequences
-    test_substrings = [
-        "150309-04",
-        "150310-11",
-        "151029_E1-1",
-        "151029_E1-5",
-        "151101_E3-12",
-        "160112-06",
-    ]
+    logger = setup_logger()
+    today = datetime.today().strftime("%Y-%m-%d")
 
-    def exclude_if_contains(path: Path) -> bool:
-        return not any(bad in str(path) for bad in test_substrings)
+    torch.backends.cudnn.benchmark = True
+    torch.manual_seed(args.get("seed", 42))
 
-    # Training hyperparameters
-    experiment_cfg = args["experiment"]
-    batch_size = experiment_cfg["batch_size"]
-    num_iterations = experiment_cfg["num_iterations"]
-    lr = float(experiment_cfg["lr"])
-    num_workers = experiment_cfg["num_workers"] if torch.cuda.is_available() else 0
-    device = "cuda" if torch.cuda.is_available() else "mps"
-    log_loss_every = experiment_cfg["log_loss_every"]
-    val_dataset_length = experiment_cfg["val_dataset_length"]
-
-    # Dataset
-    dataset_cfg = args["dataset"]
-    dataset = CSVDataset(
-        tracker_csv_dir_name=dataset_cfg["tracker_csv_dir_name"],
-        embedding_csv_dir_name=dataset_cfg["embedding_csv_dir_name"],
-        gt_csv_dir_name=dataset_cfg["gt_csv_dir_name"],
-        run=dataset_cfg["run"],
-        filter_fn=exclude_if_contains,
-        candidate_graph_dir_name=dataset_cfg["candidate_graph_dir_name"],
-    )
-
-    val_dataset = CSVDataset(
-        tracker_csv_dir_name=dataset_cfg["tracker_csv_dir_name"],
-        embedding_csv_dir_name=dataset_cfg["embedding_csv_dir_name"],
-        gt_csv_dir_name=dataset_cfg["gt_csv_dir_name"],
-        run=dataset_cfg["run"],
-        filter_fn=exclude_if_contains,
-        candidate_graph_dir_name=dataset_cfg["candidate_graph_dir_name"],
-        length=val_dataset_length,
-    )
-
-    # Model config
+    # Experiment setup
+    exp_cfg = args["experiment"]
     model_cfg = args["model"]
-    #model = Model(
-    #    in_channels=model_cfg["in_channels"],
-    #    img_size=model_cfg["img_size"],
-    #    patch_size=model_cfg["patch_size"],
-    #    channels=model_cfg["channels"],
-    #    num_blocks=model_cfg["num_blocks"],
-    #    layers_per_block=model_cfg["layers_per_block"],
-    #    nvp=model_cfg["nvp"],
-    #    num_classes=model_cfg["num_classes"],
-    #).to(device)
-
-
-    model= Model(
-        num_tokens=model_cfg["num_tokens"],
-        token_size=model_cfg["token_size"],
-        projection_dims=model_cfg["projection_dims"],
-        num_blocks=model_cfg["num_blocks"],
-        layers_per_block=model_cfg["layers_per_block"],
-        nvp=model_cfg["nvp"],
-        num_classes=model_cfg["num_classes"],
-    ).to(device)
-
-
-    # Noise config
+    dataset_cfg = args["dataset"]
+    val_dataset_cfg = args["val_dataset"]
     noise_cfg = args["noise"]
-    std = noise_cfg["std"]
-    use_noise = bool(noise_cfg["use_noise"])
 
-    # Data loader
-    loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=num_workers)
+    device = "cuda" if torch.cuda.is_available() else "mps"
+    num_workers = exp_cfg["num_workers"] if torch.cuda.is_available() else 0
 
-    # Optimizer
+    dataset = create_dataset(dataset_cfg, dataset_cfg["ignore_substrings"])
+    val_dataset = create_dataset(val_dataset_cfg, val_dataset_cfg["ignore_substrings"])
+
+    loader = DataLoader(
+        dataset,
+        batch_size=exp_cfg["batch_size"],
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=exp_cfg["batch_size"],
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    model = Model(**model_cfg).to(device)
     optimizer = torch.optim.AdamW(
-        model.parameters(), betas=(0.9, 0.95), lr=lr, weight_decay=1e-4
+        model.parameters(),
+        lr=float(exp_cfg["lr"]),
+        betas=(0.9, 0.95),
+        weight_decay=1e-4,
     )
-
-    # Scheduler
     scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lr_lambda=lambda it: (1 - it / num_iterations) ** 0.9
+        optimizer, lambda it: (1 - it / exp_cfg["num_iterations"]) ** 0.9
     )
 
-    experiment_dir = Path(f"experiment-{today_str}")
-    model_dir = experiment_dir / "models_autoencoder"
+    experiment_dir = Path(f"experiment-{today}")
+    model_dir = experiment_dir / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
+    with open(model_dir / "config.yaml", "w") as f:
+        yaml.dump(args, f)
 
-    # TARFlowLogger
     tarflow_logger = utils.TARFlowLogger(
         keys=[
             "iteration",
@@ -126,85 +105,118 @@ def main(args):
             "val_loss",
             "val_loss/mse(z)",
             "val_loss/log(|det|)",
+            "lr",
         ],
         title=experiment_dir / "training",
     )
 
-    loss_average = 0.0
-    min_loss = float("inf")
+    logger.info(
+        f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}"
+    )
 
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"Total trainable parameters: {total_params}")
+    min_val_loss = float("inf")
+    running_train_loss = 0.0
+    patience = exp_cfg.get("early_stopping_patience", 10)
+    epochs_since_improvement = 0
 
-    # Iteration loop
     for iteration, x in enumerate(loader):
-        if iteration >= num_iterations:
+        if iteration >= exp_cfg["num_iterations"]:
             break
-        x = x[..., :-1]  # ignore the GT dimension for now! B 2 129
-        x = x.view(x.shape[0] * x.shape[1], x.shape[-1], 1) # B 129 1
+
+        x = x[..., :-1]
+        B, N, D = x.shape
+        x = x.view(B * N, D, 1)
         x = x.to(device)
-        if use_noise:
-            eps = std + torch.randn_like(x)
-            x = x + eps
-        y = None  # class conditional input, not used in this example
+        x = maybe_add_noise(x, noise_cfg["std"], noise_cfg["use_noise"])
+        y = None
+
+        model.train()
         optimizer.zero_grad()
-        loss, (z, outputs, logdets) = compute_loss(x, y, model)
+        loss, (z, _, logdets) = compute_loss(x, y, model)
         loss.backward()
         optimizer.step()
         scheduler.step()
 
+        loss_mse = 0.5 * (z**2).mean().item()
+        loss_logdet = logdets.mean().item()
+
         tarflow_logger.add("iteration", iteration)
         tarflow_logger.add("train_loss", loss.item())
-        tarflow_logger.add("train_loss/mse(z)", 0.5 * (z**2).mean().item())
-        tarflow_logger.add("train_loss/log(|det|)", logdets.mean().item())
+        tarflow_logger.add("train_loss/mse(z)", loss_mse)
+        tarflow_logger.add("train_loss/log(|det|)", loss_logdet)
+        tarflow_logger.add("lr", scheduler.get_last_lr()[0])
         logger.info(
-            f"At iteration {iteration}, loss is {loss.item()}, loss/mse(z) is {0.5 * (z**2).mean().item()}, loss/log(|det|) is {logdets.mean().item()}"
+            f"At iteration {iteration}, loss is {loss.item()}, loss/mse(z) is {loss_mse}, loss/log(|det|) is {loss_logdet}"
         )
-        loss_average += loss.item()
+        running_train_loss += loss.item()
 
-        if (iteration + 1) % log_loss_every == 0:
-            loss_average /= log_loss_every
-            logger.info(f"[Iter {iteration}],  Avg. Train Loss: {loss_average:.4f}")
+        if (iteration + 1) % exp_cfg["log_loss_every"] == 0:
+            avg_train_loss = running_train_loss / exp_cfg["log_loss_every"]
+            logger.info(f"[Iter {iteration}] Avg. Train Loss: {avg_train_loss:.4f}")
+            running_train_loss = 0.0
 
-            # Evaluate on validation set
+            # Evaluate
             model.eval()
-            val_loss_average = 0.0
-            count = 0
+            val_loss_sum, val_batches = 0.0, 0
+
             with torch.no_grad():
                 for val_x in val_loader:
-                    val_x = val_x[..., :-1]  # ignore the GT dimension for now!
-                    val_x = val_x.view(val_x.shape[0] * val_x.shape[1], 1, -1)
+                    val_x = val_x[..., :-1]
+                    B, N, D = val_x.shape
+                    val_x = val_x.view(B * N, D, 1)
                     val_x = val_x.to(device)
-                    if use_noise:
-                        eps = std + torch.randn_like(val_x)
-                        val_x = val_x + eps
-                    val_y = None  # class conditional input, not used in this example
-                    val_loss, (val_z, val_outputs, val_logdets) = compute_loss(
+                    val_x = maybe_add_noise(
+                        val_x, noise_cfg["std"], noise_cfg["use_noise"]
+                    )
+                    val_y = None
+                    val_loss, (val_z, _, val_logdets) = compute_loss(
                         val_x, val_y, model
                     )
-                    val_loss_average += val_loss.item()
-                    count += 1
-            val_loss_average /= count
-            logger.info(f"[Iter {iteration}], Avg. Val Loss: {val_loss_average:.4f}")
-            tarflow_logger.add("val_loss", val_loss_average)
+
+                    tarflow_logger.add(
+                        "val_loss/mse(z)", 0.5 * (val_z**2).mean().item()
+                    )
+                    tarflow_logger.add("val_loss/log(|det|)", val_logdets.mean().item())
+
+                    val_loss_sum += val_loss.item()
+                    val_batches += 1
+
+            avg_val_loss = val_loss_sum / val_batches
+            tarflow_logger.add("val_loss", avg_val_loss)
+            logger.info(f"[Iter {iteration}] Avg. Val Loss: {avg_val_loss:.4f}")
 
             # Save checkpoints
-            checkpoint_data = {
+            checkpoint = {
                 "iteration": iteration,
                 "model_state_dict": model.state_dict(),
                 "optim_state_dict": optimizer.state_dict(),
-                "loss_average": loss_average,
+                "loss_average": avg_train_loss,
                 "logger_data": tarflow_logger.data,
             }
 
-            torch.save(checkpoint_data, model_dir / "last.pth")
-            if val_loss_average < min_loss:
-                min_loss = val_loss_average
-                torch.save(checkpoint_data, model_dir / "best.pth")
-                logger.info(f"New best model saved at iteration {iteration}")
+            # Save checkpoint
+            torch.save(checkpoint, model_dir / "last.pth")
 
-            loss_average = 0.0
-            model.train()
+            if avg_val_loss < min_val_loss:
+                min_val_loss = avg_val_loss
+                epochs_since_improvement = 0
+                torch.save(checkpoint, model_dir / "best.pth")
+                logger.info(f"New best model saved at iteration {iteration}")
+            else:
+                epochs_since_improvement += 1
+                logger.info(
+                    f"No improvement. Patience: {epochs_since_improvement}/{patience}"
+                )
+
+            if epochs_since_improvement >= patience:
+                logger.info("Early stopping triggered — stopping training.")
+                break
+
+            torch.save(checkpoint, model_dir / "last.pth")
+            if avg_val_loss < min_val_loss:
+                min_val_loss = avg_val_loss
+                torch.save(checkpoint, model_dir / "best.pth")
+                logger.info(f"New best model saved at iteration {iteration}")
         else:
             tarflow_logger.add("val_loss", "")
 
@@ -212,13 +224,8 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train model with YAML config")
-    parser.add_argument(
-        "--yaml_config_file_name",
-        type=str,
-        required=True,
-        help="Path to the YAML config file",
-    )
+    parser = argparse.ArgumentParser(description="Train TARFlow with YAML config")
+    parser.add_argument("--yaml_config_file_name", type=str, required=True)
     args_cli = parser.parse_args()
 
     with open(args_cli.yaml_config_file_name, "r") as f:

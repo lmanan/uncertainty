@@ -19,7 +19,7 @@ class CSVDataset(IterableDataset):
         embedding_csv_dir_name: str,
         candidate_graph_dir_name: str,
         gt_csv_dir_name: str,
-        run: str,
+        run: str | None = None,
         filter_fn: Optional[Callable[[Path], bool]] = None,
         length: int | None = None,
     ):
@@ -27,18 +27,30 @@ class CSVDataset(IterableDataset):
         self.embedding_dir = Path(embedding_csv_dir_name)
         self.gt_dir = Path(gt_csv_dir_name)
         self.candidate_graph_dir = Path(candidate_graph_dir_name)
-
-        self.tracker_csv_files: List[Path] = sorted(
-            self.tracker_dir.glob(f"{run}/result_tta/*/jsons/ilp_original_ids.csv")
-        )
-        self.embedding_csv_files: List[Path] = sorted(
-            self.embedding_dir.glob(f"{run}/embeddings/*.csv")
-        )
-        self.gt_csv_files: List[Path] = sorted(self.gt_dir.glob("*.csv"))
-        self.candidate_graph_pkl_files: List[Path] = sorted(
-            self.candidate_graph_dir.glob("*.pkl")
-        )
-
+        if run is not None:
+            self.tracker_csv_files: List[Path] = sorted(
+                self.tracker_dir.glob(f"{run}/result_tta/*/jsons/ilp_original_ids.csv")
+            )
+            self.embedding_csv_files: List[Path] = sorted(
+                self.embedding_dir.glob(f"{run}/embeddings/*.csv")
+            )
+            self.gt_csv_files: List[Path] = sorted(self.gt_dir.glob(f"{run}/*.csv"))
+            self.candidate_graph_pkl_files: List[Path] = sorted(
+                self.candidate_graph_dir.glob(f"{run}/*.pkl")
+            )
+        else:
+            self.tracker_csv_files: List[Path] = sorted(
+                self.tracker_dir.glob(
+                    "[0][0-9]/result_tta/*/jsons/ilp_original_ids.csv"
+                )
+            )
+            self.embedding_csv_files: List[Path] = sorted(
+                self.embedding_dir.glob("[0][0-9]/embeddings/*.csv")
+            )
+            self.gt_csv_files: List[Path] = sorted(self.gt_dir.glob("[0][0-9]/*.csv"))
+            self.candidate_graph_pkl_files: List[Path] = sorted(
+                self.candidate_graph_dir.glob("[0][0-9]/*.pkl")
+            )
         if filter_fn:
             self.tracker_csv_files = [f for f in self.tracker_csv_files if filter_fn(f)]
             self.embedding_csv_files = [
